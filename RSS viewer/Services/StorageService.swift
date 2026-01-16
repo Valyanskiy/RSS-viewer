@@ -1,0 +1,132 @@
+//
+//  StorageService.swift
+//  RSS viewer
+//
+//  Created by Андрей Валянский on 16.01.2026.
+//
+
+import CoreData
+
+class StorageService { // Store data in CoreData
+    let container = NSPersistentContainer(name: "RSS_viewer")
+    let networkService = NetworkService()
+    
+    lazy var context: NSManagedObjectContext = container.viewContext
+    
+    init() {
+        container.loadPersistentStores { description, error in
+            if let error = error {
+                fatalError("Не удалось загрузить CoreData: \(error)")
+            }
+        }
+    }
+    
+    // MARK: Operations with feeds
+    func newFeed(_ urlString: String) async throws {
+        guard let url = URL(string: urlString) else { return }
+        guard let data: Data = try? await networkService.fetchFeed(url: url) else { return }
+        
+        let newFeed = Feed(context: context)
+        
+        try parseFeed(from: data, feed: newFeed)
+        newFeed.url = urlString
+        newFeed.id = UUID()
+//        print(newFeed)
+        try await MainActor.run {
+            try context.save()
+        }
+    }
+
+    // MARK: UI data source
+    func feeds() throws -> [feedsListItem] {
+        let request: NSFetchRequest<Feed> = Feed.fetchRequest()
+        let feeds = try context.fetch(request)
+//        print(feeds)
+        
+        return feeds.compactMap { feed in
+            guard let id = feed.id, let title = feed.title, let channelDescription = feed.channelDescription else { return nil }
+            
+            return feedsListItem(id: id, title: title, channelDescription: channelDescription)
+        }
+    }
+    
+    // MARK: Parser
+    func parseFeed(from data: Data, feed: Feed) throws {
+        let parser = XMLParser(data: data)
+        let rssParserDelegate = RSSParserDelegate(feed: feed, context: context)
+        
+        parser.delegate = rssParserDelegate
+        parser.parse()
+    }
+}
+
+struct feedsListItem {
+    let id: UUID
+    let title: String
+    let channelDescription: String
+}
+
+class RSSParserDelegate: NSObject, XMLParserDelegate {
+    let feed: Feed
+    let context: NSManagedObjectContext
+    
+    var phase: String = ""
+    var currentData: String = ""
+    var currentItem: Item?
+    
+    init(feed: Feed, context: NSManagedObjectContext) {
+        self.feed = feed
+        self.context = context
+        
+        super.init()
+    }
+
+    
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String : String] = [:]) {
+        currentData = ""
+        
+        switch elementName {
+        case "channel":
+            phase = elementName
+        case "item":
+            phase = elementName
+            currentItem = Item(context: context)
+            currentItem?.id = UUID()
+            currentItem?.feed = feed
+        default:
+            break
+        }
+    }
+    
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        currentData += string
+    }
+    
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+        if phase == "channel" {
+            switch elementName {
+            case "title":
+                feed.title = currentData
+            case "description":
+                feed.channelDescription = currentData
+            default:
+                break
+            }
+        } else if phase == "item" {
+            switch elementName {
+            case "title":
+                currentItem?.title = currentData
+            case "description":
+                currentItem?.summary = currentData
+            case "link":
+                currentItem?.link = currentData
+            default:
+                break
+            }
+        }
+        
+        if elementName == "item" {
+            currentItem = nil
+        }
+    }
+}
