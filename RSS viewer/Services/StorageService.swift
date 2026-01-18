@@ -22,26 +22,46 @@ class StorageService { // Store data in CoreData
     }
     
     // MARK: Operations with feeds
-    func newFeed(_ urlString: String) async throws {
-        guard let url = URL(string: urlString) else { return }
-        guard let data: Data = try? await networkService.fetchFeed(url: url) else { return }
+    func saveFeed(_ urlString: String) async throws { // If feed already exists function update it, else adds new feed
+        guard let url = URL(string: urlString) else {
+            throw NSError(domain: "InvalidURL", code: 1, userInfo: nil)
+        }
         
-        let newFeed = Feed(context: context)
+        guard let data: Data = try? await networkService.fetch(url: url) else {
+            throw NSError(domain: "NetworkError", code: 2, userInfo: nil)
+        }
         
-        try parseFeed(from: data, feed: newFeed)
-        newFeed.url = urlString
-        newFeed.id = UUID()
-//        print(newFeed)
+        let feed: Feed
+        
+        let request: NSFetchRequest<Feed> = Feed.fetchRequest()
+        request.predicate = NSPredicate(format: "url == %@", urlString)
+        request.fetchLimit = 1
+        
+        if let existingFeed = try context.fetch(request).first {
+            feed = existingFeed
+        } else {
+            feed = Feed(context: context)
+            feed.id = UUID()
+            feed.url = urlString
+        }
+        
+        try await parseFeed(from: data, feed: feed)
+        
         try await MainActor.run {
             try context.save()
         }
     }
+    
+    func deleteFeed(_ feed: Feed) throws {
+        context.delete(feed)
+        try context.save()
+    }
+
 
     // MARK: UI data source
     func feeds() throws -> [feedsListItem] {
         let request: NSFetchRequest<Feed> = Feed.fetchRequest()
         let feeds = try context.fetch(request)
-//        print(feeds)
         
         return feeds.compactMap { feed in
             guard let id = feed.id, let title = feed.title, let channelDescription = feed.channelDescription else { return nil }
@@ -51,12 +71,22 @@ class StorageService { // Store data in CoreData
     }
     
     // MARK: Parser
-    func parseFeed(from data: Data, feed: Feed) throws {
+    func parseFeed(from data: Data, feed: Feed) async throws {
         let parser = XMLParser(data: data)
-        let rssParserDelegate = RSSParserDelegate(feed: feed, context: context)
+        let rssParserDelegate = RSSParserDelegate(feed: feed, context: context, networkService: networkService)
         
         parser.delegate = rssParserDelegate
         parser.parse()
+        
+//        try await loadContent(feed: feed)
+    }
+    
+    func loadContent(feed: Feed) async throws {
+        guard let items = feed.items as? Set<Item> else { return }
+        
+        for item in items {
+            item.content = String(data: try await networkService.fetch(url: URL(string: item.link!)!), encoding: .utf8)
+        }
     }
 }
 
@@ -69,14 +99,19 @@ struct feedsListItem {
 class RSSParserDelegate: NSObject, XMLParserDelegate {
     let feed: Feed
     let context: NSManagedObjectContext
+    let networkService: NetworkService
     
     var phase: String = ""
     var currentData: String = ""
+    var currentLink: String?
     var currentItem: Item?
     
-    init(feed: Feed, context: NSManagedObjectContext) {
+    init(feed: Feed, context: NSManagedObjectContext, networkService: NetworkService) {
         self.feed = feed
+        self.feed.title = "Loading..."
+        self.feed.lastFetched = Date()
         self.context = context
+        self.networkService = networkService
         
         super.init()
     }
@@ -90,6 +125,7 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
             phase = elementName
         case "item":
             phase = elementName
+            
             currentItem = Item(context: context)
             currentItem?.id = UUID()
             currentItem?.feed = feed
@@ -126,6 +162,15 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
         }
         
         if elementName == "item" {
+            if let link = currentItem?.link {
+                let predicate = NSPredicate(format: "link == %@", link)
+                let filtredNSSet = feed.items?.filtered(using: predicate)
+                
+                if let foundItem = filtredNSSet?.first as? Item {
+                    currentItem?.id = foundItem.id
+                    currentItem?.summary = foundItem.summary
+                }
+            }
             currentItem = nil
         }
     }
