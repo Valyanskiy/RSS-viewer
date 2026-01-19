@@ -16,8 +16,9 @@ class RSSListViewController: UIViewController {
         $0.register(UITableViewCell.self, forCellReuseIdentifier: "cell")
         $0.dataSource = self
         $0.delegate = self
+//        $0.layoutMargins = .zero
         return $0
-    }(UITableView(frame: view.frame, style: .insetGrouped))
+    }(UITableView(frame: view.frame, style: .plain))
     lazy var fetchedResultsController: NSFetchedResultsController<Feed> = {
         let request: NSFetchRequest<Feed> = Feed.fetchRequest()
         request.sortDescriptors = [
@@ -42,6 +43,7 @@ class RSSListViewController: UIViewController {
 //        navigationController?.navigationBar.prefersLargeTitles = true
         
         navigationController?.setToolbarHidden(false, animated: false)
+        navigationItem.leftBarButtonItem = editButtonItem
         navigationItem.rightBarButtonItem = addFeedButton
         
         view.addSubview(tableView)
@@ -51,6 +53,20 @@ class RSSListViewController: UIViewController {
         } catch {
             print("Ошибка загрузки данных: \(error)")
         }
+    }
+    
+    override func viewDidAppear(_ animated: Bool) {
+        Task {
+            try await storageService.updateAllFeeds()
+            try await MainActor.run {
+                try fetchedResultsController.performFetch()
+            }
+        }
+    }
+    
+    override func setEditing(_ editing: Bool, animated: Bool) {
+        super.setEditing(editing, animated: animated)
+        tableView.setEditing(editing, animated: animated)
     }
       
     @objc func showAddFeedAlert() {
@@ -118,6 +134,11 @@ extension RSSListViewController: UITableViewDataSource {
 }
 
 extension RSSListViewController: UITableViewDelegate {
+    func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        navigationController?.pushViewController(FeedListViewController(title: fetchedResultsController.object(at: indexPath).title ?? "", storageService: storageService, feedId: fetchedResultsController.object(at: indexPath).id!), animated: true)
+        tableView.deselectRow(at: indexPath, animated: true)
+    }
+    
     func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
         if editingStyle == .delete {
             let feed = fetchedResultsController.object(at: indexPath)

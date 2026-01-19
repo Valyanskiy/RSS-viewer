@@ -10,6 +10,7 @@ import CoreData
 class StorageService { // Store data in CoreData
     let container = NSPersistentContainer(name: "RSS_viewer")
     let networkService = NetworkService()
+    var lastUpdate: Date?
     
     lazy var context: NSManagedObjectContext = container.viewContext
     
@@ -56,17 +57,15 @@ class StorageService { // Store data in CoreData
         context.delete(feed)
         try context.save()
     }
-
-
-    // MARK: UI data source
-    func feeds() throws -> [feedsListItem] {
-        let request: NSFetchRequest<Feed> = Feed.fetchRequest()
-        let feeds = try context.fetch(request)
-        
-        return feeds.compactMap { feed in
-            guard let id = feed.id, let title = feed.title, let channelDescription = feed.channelDescription else { return nil }
-            
-            return feedsListItem(id: id, title: title, channelDescription: channelDescription)
+    
+    func updateAllFeeds() async throws {
+        if lastUpdate == nil || lastUpdate?.timeIntervalSinceNow ?? 0 > 900 {
+            lastUpdate = Date()
+            let request: NSFetchRequest<Feed> = Feed.fetchRequest()
+            let feeds = try context.fetch(request)
+            for feed in feeds {
+                try await saveFeed(feed.url!)
+            }
         }
     }
     
@@ -77,16 +76,6 @@ class StorageService { // Store data in CoreData
         
         parser.delegate = rssParserDelegate
         parser.parse()
-        
-//        try await loadContent(feed: feed)
-    }
-    
-    func loadContent(feed: Feed) async throws {
-        guard let items = feed.items as? Set<Item> else { return }
-        
-        for item in items {
-            item.content = String(data: try await networkService.fetch(url: URL(string: item.link!)!), encoding: .utf8)
-        }
     }
 }
 
@@ -100,6 +89,23 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
     let feed: Feed
     let context: NSManagedObjectContext
     let networkService: NetworkService
+    let dateFormatters: [DateFormatter] = {
+        let formats = [
+            "EEE, dd MMM yyyy HH:mm:ss zzz",
+            "EEE, dd MMM yyyy HH:mm:ss Z",
+            "EEE, dd MMM yyyy HH:mm:ss z",
+            "EEE, dd MMM yyyy HH:mm:ss",
+            "yyyy-MM-dd'T'HH:mm:ssZ",
+            "yyyy-MM-dd HH:mm:ss"
+        ]
+        
+        return formats.map { format in
+            let formatter = DateFormatter()
+            formatter.locale = Locale(identifier: "en_US_POSIX")
+            formatter.dateFormat = format
+            return formatter
+        }
+    }()
     
     var phase: String = ""
     var currentData: String = ""
@@ -156,6 +162,13 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
                 currentItem?.summary = currentData
             case "link":
                 currentItem?.link = currentData
+            case "pubDate":
+                for formatter in dateFormatters {
+                    if let date = formatter.date(from: currentData) {
+                        currentItem?.publishedAt = date
+                        break
+                    }
+                }
             default:
                 break
             }
@@ -163,12 +176,17 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
         
         if elementName == "item" {
             if let link = currentItem?.link {
-                let predicate = NSPredicate(format: "link == %@", link)
-                let filtredNSSet = feed.items?.filtered(using: predicate)
+                let predicateLink = NSPredicate(format: "link == %@", link)
+                let predicateID = NSPredicate(format: "id != %@", currentItem!.id! as CVarArg)
+                let filtredNSSet = feed.items?.filtered(using: NSCompoundPredicate(andPredicateWithSubpredicates: [predicateLink, predicateID]))
                 
                 if let foundItem = filtredNSSet?.first as? Item {
-                    currentItem?.id = foundItem.id
-                    currentItem?.summary = foundItem.summary
+                    foundItem.title = currentItem?.title
+                    foundItem.summary = currentItem?.summary
+                    if let pubDate = currentItem?.publishedAt {
+                        foundItem.publishedAt = pubDate
+                    }
+                    context.delete(currentItem!)
                 }
             }
             currentItem = nil
