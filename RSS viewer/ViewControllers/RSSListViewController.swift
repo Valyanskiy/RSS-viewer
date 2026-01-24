@@ -11,14 +11,39 @@ import CoreData
 class RSSListViewController: UIViewController {
     let storageService = StorageService()
     
+    private let titleView = UILabel()
+    private let subtitleView = UILabel()
+    lazy var stackView: UIStackView = {
+        titleView.text = "RSS каналы"
+        titleView.font = .preferredFont(forTextStyle: .headline)
+        
+        subtitleView.text = "Обновление..."
+        subtitleView.font = .preferredFont(forTextStyle: .caption1)
+        subtitleView.textColor = .secondaryLabel
+        subtitleView.textAlignment = .center
+        
+        let stackView = UIStackView(arrangedSubviews: [titleView, subtitleView])
+        stackView.axis = .vertical
+        stackView.alignment = .center
+        
+        return stackView
+    }()
+    
     lazy var addFeedButton = UIBarButtonItem(barButtonSystemItem: .add, target: self, action: #selector(showAddFeedAlert))
+    
+    lazy var refreshControl: UIRefreshControl = {
+        $0.addTarget(self, action: #selector(refresh), for: .valueChanged)
+        return $0
+    }(UIRefreshControl())
+    
     lazy var tableView: UITableView = {
         $0.register(UITableViewCell.self, forCellReuseIdentifier: "cell")
         $0.dataSource = self
         $0.delegate = self
-//        $0.layoutMargins = .zero
+        $0.refreshControl = refreshControl
         return $0
-    }(UITableView(frame: view.frame, style: .plain))
+    }(UITableView(frame: view.frame, style: .insetGrouped))
+    
     lazy var fetchedResultsController: NSFetchedResultsController<Feed> = {
         let request: NSFetchRequest<Feed> = Feed.fetchRequest()
         request.sortDescriptors = [
@@ -39,9 +64,7 @@ class RSSListViewController: UIViewController {
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
-        title = "RSS каналы"
-//        navigationController?.navigationBar.prefersLargeTitles = true
-        
+        navigationItem.titleView = stackView
         navigationController?.setToolbarHidden(false, animated: false)
         navigationItem.leftBarButtonItem = editButtonItem
         navigationItem.rightBarButtonItem = addFeedButton
@@ -57,9 +80,16 @@ class RSSListViewController: UIViewController {
     
     override func viewDidAppear(_ animated: Bool) {
         Task {
-            try await storageService.updateAllFeeds()
-            try await MainActor.run {
-                try fetchedResultsController.performFetch()
+            do {
+                _ = try await storageService.updateAllFeeds()
+            } catch {
+                print("Ошибка обновления: \(error)")
+            }
+            
+            await MainActor.run {
+                subtitleView.text = storageService.lastFetchAllFeedsInfo()
+                stackView.setNeedsLayout()
+                stackView.layoutIfNeeded()
             }
         }
     }
@@ -102,6 +132,23 @@ class RSSListViewController: UIViewController {
         present(alert, animated: true)
     }
     
+    @objc func refresh() {
+        Task {
+            do {
+                _ = try await storageService.updateAllFeeds(force: true)
+            } catch {
+                print("Ошибка обновления: \(error)")
+            }
+            
+            await MainActor.run {
+                subtitleView.text = storageService.lastFetchAllFeedsInfo()
+                stackView.setNeedsLayout()
+                stackView.layoutIfNeeded()
+                tableView.reloadData()
+                refreshControl.endRefreshing()
+            }
+        }
+    }
     
     func addFeed(urlString: String) async {
         do {
@@ -153,10 +200,12 @@ extension RSSListViewController: UITableViewDelegate {
 
 extension RSSListViewController: NSFetchedResultsControllerDelegate {
     func controllerWillChangeContent(_ controller: NSFetchedResultsController<any NSFetchRequestResult>) {
+        guard !refreshControl.isRefreshing else { return }
         tableView.beginUpdates()
     }
     
     func controller(_ controller: NSFetchedResultsController<any NSFetchRequestResult>, didChange anObject: Any, at indexPath: IndexPath?, for type: NSFetchedResultsChangeType, newIndexPath: IndexPath?) {
+        guard !refreshControl.isRefreshing else { return }
         switch type {
         case .insert:
             tableView.insertRows(at: [newIndexPath!], with: .automatic)
@@ -174,6 +223,7 @@ extension RSSListViewController: NSFetchedResultsControllerDelegate {
     func controllerDidChangeContent(
         _ controller: NSFetchedResultsController<NSFetchRequestResult>
     ) {
+        guard !refreshControl.isRefreshing else { return }
         tableView.endUpdates()
     }
 }

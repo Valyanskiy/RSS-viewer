@@ -21,7 +21,9 @@ class NetworkService {
         }
         
         func fetchData(url: URL) async throws -> Data {
-            let (data, responce) = try await URLSession.shared.data(from: url)
+            var request = URLRequest(url: url)
+            request.timeoutInterval = 10
+            let (data, responce) = try await URLSession.shared.data(for: request)
             guard let httpResponce = responce as? HTTPURLResponse, httpResponce.statusCode == 200 else {
                 throw URLError(.badServerResponse)
             }

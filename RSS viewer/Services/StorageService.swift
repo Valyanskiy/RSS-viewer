@@ -10,7 +10,12 @@ import CoreData
 class StorageService { // Store data in CoreData
     let container = NSPersistentContainer(name: "RSS_viewer")
     let networkService = NetworkService()
-    var lastUpdate: Date?
+    let df = {
+        $0.timeStyle = .short
+        $0.dateStyle = .short
+        return $0
+    }(DateFormatter())
+    var lastUpdate: Date? = UserDefaults.standard.value(forKey: "lastUpdate") as? Date
     
     lazy var context: NSManagedObjectContext = container.viewContext
     
@@ -53,20 +58,53 @@ class StorageService { // Store data in CoreData
         }
     }
     
+    func saveFeed(_ id: UUID) async throws {
+        let request: NSFetchRequest<Feed> = Feed.fetchRequest()
+        request.predicate = NSPredicate(format: "id == %@", id as CVarArg)
+        try await saveFeed(try context.fetch(request).first!.url!)
+    }
+    
     func deleteFeed(_ feed: Feed) throws {
         context.delete(feed)
         try context.save()
     }
     
-    func updateAllFeeds() async throws {
-        if lastUpdate == nil || lastUpdate?.timeIntervalSinceNow ?? 0 > 900 {
-            lastUpdate = Date()
+    func updateAllFeeds(force: Bool = false) async throws -> Bool {
+        if lastUpdate?.timeIntervalSinceNow ?? 901 > 900 || force {
             let request: NSFetchRequest<Feed> = Feed.fetchRequest()
             let feeds = try context.fetch(request)
             for feed in feeds {
                 try await saveFeed(feed.url!)
             }
+            
+            lastUpdate = Date()
+            UserDefaults.standard.set(lastUpdate, forKey: "lastUpdate")
+            return true
+        } else {
+            return false
         }
+    }
+    
+    // MARK: Info
+    func lastFetchAllFeedsInfo() -> String {
+        guard let lastUpdate else { return "Обновлено: никогда" }
+        return "Обновлено: \(df.string(from: lastUpdate))"
+    }
+    
+    func lastFetchFeedInfo(id: UUID) -> String {
+        let request: NSFetchRequest<Feed> = Feed.fetchRequest()
+        let predicate = NSPredicate(format: "id == %@", id as CVarArg)
+        request.predicate = predicate
+        
+        do {
+            let feeds = try context.fetch(request)
+            
+            if let lastUpdated = feeds.first?.lastFetched {
+                return "Обновлено: \(df.string(from: lastUpdated))"
+            }
+        } catch {}
+        
+        return "Обновлено: никогда"
     }
     
     // MARK: Parser

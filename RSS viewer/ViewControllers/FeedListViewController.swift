@@ -24,6 +24,24 @@ class FeedListViewController: UIViewController {
         fatalError("init(coder:) has not been implemented")
     }
     
+    private let titleView = UILabel()
+    private let subtitleView = UILabel()
+    lazy var stackView: UIStackView = {
+        titleView.text = title
+        titleView.font = .preferredFont(forTextStyle: .headline)
+        
+        subtitleView.text = storageService.lastFetchFeedInfo(id: feedId)
+        subtitleView.font = .preferredFont(forTextStyle: .caption1)
+        subtitleView.textColor = .secondaryLabel
+        subtitleView.textAlignment = .center
+        
+        let stackView = UIStackView(arrangedSubviews: [titleView, subtitleView])
+        stackView.axis = .vertical
+        stackView.alignment = .center
+        
+        return stackView
+    }()
+    
     lazy var fetchedResultsController: NSFetchedResultsController<Item> = {
         let request: NSFetchRequest<Item> = Item.fetchRequest()
         request.predicate = NSPredicate(format: "feed.id == %@", feedId as CVarArg)
@@ -41,17 +59,22 @@ class FeedListViewController: UIViewController {
         frc.delegate = self
         return frc
     }()
+    lazy var refrechControl: UIRefreshControl = {
+        $0.addTarget(self, action: #selector(refresh), for: .valueChanged)
+        return $0
+    }(UIRefreshControl())
     lazy var tableView: UITableView = {
         $0.register(UITableViewCell.self, forCellReuseIdentifier: "cell")
         $0.dataSource = self
         $0.delegate = self
+        $0.refreshControl = refrechControl
         return $0
     }(UITableView(frame: view.frame, style: .insetGrouped))
     
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .systemBackground
-//        navigationController?.title = fetchedResultsController.
+        navigationItem.titleView = stackView
         
         view.addSubview(tableView)
         
@@ -59,6 +82,21 @@ class FeedListViewController: UIViewController {
             try fetchedResultsController.performFetch()
         } catch {
             print("Ошибка загрузки данных: \(error)")
+        }
+    }
+    
+    @objc func refresh() {
+        Task {
+            do {
+                try await storageService.saveFeed(feedId)
+            } catch {}
+            
+            await MainActor.run {
+                subtitleView.text = storageService.lastFetchFeedInfo(id: feedId)
+                stackView.setNeedsLayout()
+                stackView.layoutIfNeeded()
+                refrechControl.endRefreshing()
+            }
         }
     }
 }
