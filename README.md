@@ -2,7 +2,8 @@
 
 Проект позволяет сохранять и просматривать RSS каналы.
 
-![](.READMEfiles/Example.gif)
+<img src=".READMEfiles/Example.gif" width="300">
+
 ## Возможности
 
 - Добавление RSS каналов по URL
