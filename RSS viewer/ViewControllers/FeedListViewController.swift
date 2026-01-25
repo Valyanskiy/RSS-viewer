@@ -52,14 +52,14 @@ class FeedListViewController: UIViewController {
         let frc = NSFetchedResultsController(
             fetchRequest: request,
             managedObjectContext: storageService.context,
-            sectionNameKeyPath: "title",
+            sectionNameKeyPath: "publishedAt",
             cacheName: nil
         )
 
         frc.delegate = self
         return frc
     }()
-    lazy var refrechControl: UIRefreshControl = {
+    lazy var refreshControl: UIRefreshControl = {
         $0.addTarget(self, action: #selector(refresh), for: .valueChanged)
         return $0
     }(UIRefreshControl())
@@ -67,9 +67,10 @@ class FeedListViewController: UIViewController {
         $0.register(UITableViewCell.self, forCellReuseIdentifier: "cell")
         $0.dataSource = self
         $0.delegate = self
-        $0.refreshControl = refrechControl
+        $0.refreshControl = refreshControl
+        $0.translatesAutoresizingMaskIntoConstraints = false
         return $0
-    }(UITableView(frame: view.frame, style: .insetGrouped))
+    }(UITableView(frame: .zero, style: .insetGrouped))
     
     override func viewDidLoad() {
         super.viewDidLoad()
@@ -77,6 +78,13 @@ class FeedListViewController: UIViewController {
         navigationItem.titleView = stackView
         
         view.addSubview(tableView)
+        
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
         
         do {
             try fetchedResultsController.performFetch()
@@ -89,13 +97,21 @@ class FeedListViewController: UIViewController {
         Task {
             do {
                 try await storageService.saveFeed(feedId)
-            } catch {}
+            } catch let error as StorageError {
+                await MainActor.run {
+                    showError(error.localizedDescription)
+                }
+            } catch {
+                await MainActor.run {
+                    showError("Ошибка обновления: \(error.localizedDescription)")
+                }
+            }
             
             await MainActor.run {
                 subtitleView.text = storageService.lastFetchFeedInfo(id: feedId)
                 stackView.setNeedsLayout()
                 stackView.layoutIfNeeded()
-                refrechControl.endRefreshing()
+                refreshControl.endRefreshing()
             }
         }
     }
@@ -116,7 +132,12 @@ extension FeedListViewController: UITableViewDataSource {
         dateFormatter.timeStyle = .short
         dateFormatter.locale = Locale.current
         
-        return dateFormatter.string(from: (fetchedResultsController.sections?[section].objects?.first as! Item).publishedAt!)
+        if let item = fetchedResultsController.sections?[section].objects?.first as? Item, let date = item.publishedAt {
+            return dateFormatter.string(from: date)
+        }
+        else {
+            return "Неизвестно"
+        }
     }
     
     func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
@@ -138,7 +159,8 @@ extension FeedListViewController: UITableViewDataSource {
 
 extension FeedListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        guard let url = URL(string: fetchedResultsController.object(at: indexPath).link!) else { return }
+        guard let link = fetchedResultsController.object(at: indexPath).link else { showError("Новость не содержит ссылку"); return }
+        guard let url = URL(string: link) else { showError("Ссылка не валидна"); return }
         let safariViewController = SFSafariViewController(url: url)
         present(safariViewController, animated: true)
         tableView.deselectRow(at: indexPath, animated: true)
@@ -153,13 +175,17 @@ extension FeedListViewController: NSFetchedResultsControllerDelegate {
     func controller(_ controller: NSFetchedResultsController<any NSFetchRequestResult>, didChange anObject: Any, at indexPath: IndexPath?, for type: NSFetchedResultsChangeType, newIndexPath: IndexPath?) {
         switch type {
         case .insert:
-            tableView.insertRows(at: [newIndexPath!], with: .automatic)
+            guard let newIndexPath else { return }
+            tableView.insertRows(at: [newIndexPath], with: .automatic)
         case .delete:
-            tableView.deleteRows(at: [indexPath!], with: .automatic)
+            guard let indexPath else { return }
+            tableView.deleteRows(at: [indexPath], with: .automatic)
         case .update:
-            tableView.reloadRows(at: [indexPath!], with: .automatic)
+            guard let indexPath else { return }
+            tableView.reloadRows(at: [indexPath], with: .automatic)
         case .move:
-            tableView.moveRow(at: indexPath!, to: newIndexPath!)
+            guard let indexPath, let newIndexPath else { return }
+            tableView.moveRow(at: indexPath, to: newIndexPath)
         @unknown default:
             break
         }

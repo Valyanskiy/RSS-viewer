@@ -41,8 +41,9 @@ class RSSListViewController: UIViewController {
         $0.dataSource = self
         $0.delegate = self
         $0.refreshControl = refreshControl
+        $0.translatesAutoresizingMaskIntoConstraints = false
         return $0
-    }(UITableView(frame: view.frame, style: .insetGrouped))
+    }(UITableView(frame: .zero, style: .insetGrouped))
     
     lazy var fetchedResultsController: NSFetchedResultsController<Feed> = {
         let request: NSFetchRequest<Feed> = Feed.fetchRequest()
@@ -70,6 +71,13 @@ class RSSListViewController: UIViewController {
         navigationItem.rightBarButtonItem = addFeedButton
         
         view.addSubview(tableView)
+        
+        NSLayoutConstraint.activate([
+            tableView.topAnchor.constraint(equalTo: view.topAnchor),
+            tableView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            tableView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            tableView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
         
         do {
             try fetchedResultsController.performFetch()
@@ -137,6 +145,7 @@ class RSSListViewController: UIViewController {
             do {
                 _ = try await storageService.updateAllFeeds(force: true)
             } catch {
+                showError("Не удалось обновить данные", title: "Ошибка обновления")
                 print("Ошибка обновления: \(error)")
             }
             
@@ -153,8 +162,14 @@ class RSSListViewController: UIViewController {
     func addFeed(urlString: String) async {
         do {
             try await storageService.saveFeed(urlString)
+        } catch let error as StorageError {
+            await MainActor.run {
+                showError(error.localizedDescription)
+            }
         } catch {
-            print("Ошибка: \(error)")
+            await MainActor.run {
+                showError("Неизвестная ошибка: \(error.localizedDescription)")
+            }
         }
     }
 }
@@ -182,7 +197,20 @@ extension RSSListViewController: UITableViewDataSource {
 
 extension RSSListViewController: UITableViewDelegate {
     func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
-        navigationController?.pushViewController(FeedListViewController(title: fetchedResultsController.object(at: indexPath).title ?? "", storageService: storageService, feedId: fetchedResultsController.object(at: indexPath).id!), animated: true)
+        let feed = fetchedResultsController.object(at: indexPath)
+        
+        guard let feedId = feed.id else {
+            showError("Ошибка: не удалось открыть канал")
+            tableView.deselectRow(at: indexPath, animated: true)
+            return
+        }
+        
+        let vc = FeedListViewController(
+            title: feed.title ?? "Без названия",
+            storageService: storageService,
+            feedId: feedId
+        )
+        navigationController?.pushViewController(vc, animated: true)
         tableView.deselectRow(at: indexPath, animated: true)
     }
     
@@ -206,15 +234,20 @@ extension RSSListViewController: NSFetchedResultsControllerDelegate {
     
     func controller(_ controller: NSFetchedResultsController<any NSFetchRequestResult>, didChange anObject: Any, at indexPath: IndexPath?, for type: NSFetchedResultsChangeType, newIndexPath: IndexPath?) {
         guard !refreshControl.isRefreshing else { return }
+        
         switch type {
         case .insert:
-            tableView.insertRows(at: [newIndexPath!], with: .automatic)
+            guard let newIndexPath else { return }
+            tableView.insertRows(at: [newIndexPath], with: .automatic)
         case .delete:
-            tableView.deleteRows(at: [indexPath!], with: .automatic)
+            guard let indexPath else { return }
+            tableView.deleteRows(at: [indexPath], with: .automatic)
         case .update:
-            tableView.reloadRows(at: [indexPath!], with: .automatic)
+            guard let indexPath else { return }
+            tableView.reloadRows(at: [indexPath], with: .automatic)
         case .move:
-            tableView.moveRow(at: indexPath!, to: newIndexPath!)
+            guard let indexPath, let newIndexPath else { return }
+            tableView.moveRow(at: indexPath, to: newIndexPath)
         @unknown default:
             break
         }

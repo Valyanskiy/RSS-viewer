@@ -30,11 +30,11 @@ class StorageService { // Store data in CoreData
     // MARK: Operations with feeds
     func saveFeed(_ urlString: String) async throws { // If feed already exists function update it, else adds new feed
         guard let url = URL(string: urlString) else {
-            throw NSError(domain: "InvalidURL", code: 1, userInfo: nil)
+            throw StorageError.invalidURL
         }
         
         guard let data: Data = try? await networkService.fetch(url: url) else {
-            throw NSError(domain: "NetworkError", code: 2, userInfo: nil)
+            throw StorageError.networkError
         }
         
         let feed: Feed
@@ -61,7 +61,16 @@ class StorageService { // Store data in CoreData
     func saveFeed(_ id: UUID) async throws {
         let request: NSFetchRequest<Feed> = Feed.fetchRequest()
         request.predicate = NSPredicate(format: "id == %@", id as CVarArg)
-        try await saveFeed(try context.fetch(request).first!.url!)
+        
+        guard let feed = try context.fetch(request).first else {
+            throw StorageError.feedNotFound
+        }
+        
+        guard let url = feed.url else {
+            throw StorageError.invalidFeedData
+        }
+        
+        try await saveFeed(url)
     }
     
     func deleteFeed(_ feed: Feed) throws {
@@ -70,11 +79,16 @@ class StorageService { // Store data in CoreData
     }
     
     func updateAllFeeds(force: Bool = false) async throws -> Bool {
-        if lastUpdate?.timeIntervalSinceNow ?? 901 > 900 || force {
+        if lastUpdate?.timeIntervalSinceNow ?? -901 < -900 || force {
             let request: NSFetchRequest<Feed> = Feed.fetchRequest()
             let feeds = try context.fetch(request)
+            
             for feed in feeds {
-                try await saveFeed(feed.url!)
+                guard let url = feed.url else {
+                    print("Пропущен канал без URL: \(feed.title ?? "без названия")")
+                    continue
+                }
+                try await saveFeed(url)
             }
             
             lastUpdate = Date()
@@ -213,21 +227,27 @@ class RSSParserDelegate: NSObject, XMLParserDelegate {
         }
         
         if elementName == "item" {
-            if let link = currentItem?.link {
-                let predicateLink = NSPredicate(format: "link == %@", link)
-                let predicateID = NSPredicate(format: "id != %@", currentItem!.id! as CVarArg)
-                let filtredNSSet = feed.items?.filtered(using: NSCompoundPredicate(andPredicateWithSubpredicates: [predicateLink, predicateID]))
-                
-                if let foundItem = filtredNSSet?.first as? Item {
-                    foundItem.title = currentItem?.title
-                    foundItem.summary = currentItem?.summary
-                    if let pubDate = currentItem?.publishedAt {
-                        foundItem.publishedAt = pubDate
-                    }
-                    context.delete(currentItem!)
-                }
+            guard let currentItem = currentItem,
+                  let itemId = currentItem.id,
+                  let link = currentItem.link else {
+                self.currentItem = nil
+                return
             }
-            currentItem = nil
+            
+            let predicateLink = NSPredicate(format: "link == %@", link)
+            let predicateID = NSPredicate(format: "id != %@", itemId as CVarArg)
+            let filteredNSSet = feed.items?.filtered(using: NSCompoundPredicate(andPredicateWithSubpredicates: [predicateLink, predicateID]))
+            
+            if let foundItem = filteredNSSet?.first as? Item {
+                foundItem.title = currentItem.title
+                foundItem.summary = currentItem.summary
+                if let pubDate = currentItem.publishedAt {
+                    foundItem.publishedAt = pubDate
+                }
+                context.delete(currentItem)
+            }
+            
+            self.currentItem = nil
         }
     }
 }
